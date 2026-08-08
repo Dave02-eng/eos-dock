@@ -1,10 +1,10 @@
 """
-EOS Report App — Streamlit Cloud
-==================================
-App guidata per compilazione EOS (End of Shift) report.
-3 template: DOCK, TSO, TSO-ITK1.
-Traduzione automatica IT→EN integrata.
-Genera link mailto per aprire Outlook con email pre-compilata.
+EOS DOCK Report App — Streamlit Cloud
+=======================================
+App guidata per compilazione EOS DOCK report.
+Sezioni: Missing, True Dock Miss, Late Departure, Dock Assets Count.
+Traduzione automatica IT→EN per Root Cause.
+Genera mailto per apertura diretta in Outlook.
 """
 
 import streamlit as st
@@ -13,16 +13,20 @@ from deep_translator import GoogleTranslator
 import urllib.parse
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="EOS Report", page_icon="📝", layout="wide")
+st.set_page_config(page_title="EOS DOCK", page_icon="🚛", layout="wide")
 
-# Destinatari email
 DEFAULT_RECIPIENTS = ["mxp5-dockobam@amazon.com", "mxp5-ob-flow@amazon.com"]
+
+# CPT per turno
+CPT_AM = ["10:00", "12:30"]
+CPT_PM = ["17:30", "20:30", "21:30"]
+CPT_DOMENICA = ["18:15", "19:15"]
 
 
 # ─── Traduttore ──────────────────────────────────────────────────────────────
 
 def translate_to_english(text: str) -> str:
-    """Traduce testo italiano in inglese. Se già inglese o vuoto, ritorna così."""
+    """Traduce e riformula testo in inglese professionale."""
     if not text or not text.strip():
         return text
     try:
@@ -64,395 +68,224 @@ st.markdown("""
         display: inline-block;
         background-color: #0078d4;
         color: white !important;
-        padding: 12px 24px;
+        padding: 14px 28px;
         border-radius: 6px;
         text-decoration: none;
         font-weight: 600;
-        font-size: 1rem;
-        margin: 10px 0;
+        font-size: 1.1rem;
+        margin: 15px 0;
     }
     .mailto-btn:hover {
         background-color: #005a9e;
         color: white !important;
     }
-    .copy-box {
-        background-color: #fff3cd;
-        border: 1px solid #ffc107;
-        border-radius: 6px;
-        padding: 12px;
-        margin: 10px 0;
-    }
 </style>
 """, unsafe_allow_html=True)
-
-
-# ─── Session State Init ──────────────────────────────────────────────────────
-if "failed_exsd_entries" not in st.session_state:
-    st.session_state.failed_exsd_entries = []
-if "true_dock_miss_entries" not in st.session_state:
-    st.session_state.true_dock_miss_entries = []
 
 
 # ─── Header ──────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class='eos-header'>
-    <h2 style='margin:0;color:white;'>📝 EOS Report Generator</h2>
-    <p style='margin:5px 0 0 0;opacity:0.8;'>Compilazione guidata End of Shift Report — MXP5</p>
+    <h2 style='margin:0;color:white;'>🚛 EOS DOCK Report</h2>
+    <p style='margin:5px 0 0 0;opacity:0.8;'>Compilazione guidata — MXP5</p>
 </div>
 """, unsafe_allow_html=True)
 
-
-# ─── Selezione Tipo EOS ─────────────────────────────────────────────────────
-col_type, col_date = st.columns([2, 1])
-
-with col_type:
-    eos_type = st.selectbox(
-        "📋 Tipo EOS",
-        ["DOCK", "TSO", "TSO-ITK1"],
-        key="eos_type_select"
-    )
+# ─── Data e Turno ────────────────────────────────────────────────────────────
+col_date, col_shift, col_name = st.columns(3)
 
 with col_date:
     eos_date = st.date_input("📅 Data", value=date.today(), key="eos_date")
 
+with col_shift:
+    # Determina se domenica
+    is_sunday = eos_date.weekday() == 6
+    if is_sunday:
+        turno = st.selectbox("⏰ Turno", ["DOMENICA"], key="turno")
+        cpt_options = CPT_DOMENICA
+    else:
+        turno = st.selectbox("⏰ Turno", ["AM", "PM"], key="turno")
+        cpt_options = CPT_AM if turno == "AM" else CPT_PM
+
+with col_name:
+    sender_name = st.text_input("👤 Il tuo nome", key="sender_name", placeholder="es. Mario Rossi")
+
 st.divider()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TABS
-# ═══════════════════════════════════════════════════════════════════════════════
-tab_form, tab_translate, tab_preview = st.tabs(
-    ["📝 Compila EOS", "🌐 Traduttore", "👁️ Anteprima & Invio"]
-)
 
+# ─── Funzione sezione eventi (Missing / TDM / LD) ────────────────────────────
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — COMPILAZIONE
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_form:
+def render_event_section(section_key: str, section_title: str, icon: str):
+    """Renderizza una sezione con NTR checkbox e form ripetibile."""
+    st.markdown(f"<div class='section-title'>{icon} {section_title}</div>", unsafe_allow_html=True)
 
-    # ─── SEZIONE MISSING ─────────────────────────────────────────────────
-    st.markdown("<div class='section-title'>📦 MISSING</div>", unsafe_allow_html=True)
-    missing_ntr = st.checkbox("Nothing to report", value=True, key="missing_ntr")
-    if not missing_ntr:
-        missing_text = st.text_area(
-            "Dettagli Missing (puoi scrivere in italiano)",
-            key="missing_text",
-            height=100,
-            placeholder="Descrivi i missing..."
+    ntr = st.checkbox("Nothing to report", value=True, key=f"{section_key}_ntr")
+
+    entries = []
+    if not ntr:
+        num = st.number_input(
+            f"Quanti eventi {section_title}?",
+            min_value=1, max_value=10, value=1,
+            key=f"{section_key}_num"
         )
-    else:
-        missing_text = "Nothing to report"
 
-    # ─── SEZIONE TRUE DOCK MISS ──────────────────────────────────────────
-    st.markdown("<div class='section-title'>🚛 TRUE DOCK MISS</div>", unsafe_allow_html=True)
-    tdm_ntr = st.checkbox("Nothing to report", value=True, key="tdm_ntr")
-
-    if not tdm_ntr:
-        st.markdown("**Aggiungi True Dock Miss:**")
-        num_tdm = st.number_input("Quanti True Dock Miss?", min_value=1, max_value=10, value=1, key="num_tdm")
-
-        tdm_entries = []
-        for i in range(num_tdm):
-            with st.expander(f"True Dock Miss #{i+1}", expanded=True):
+        for i in range(num):
+            with st.expander(f"{section_title} #{i+1}", expanded=True):
                 col1, col2 = st.columns(2)
                 with col1:
-                    tdm_cpt = st.text_input("CPT", key=f"tdm_cpt_{i}", placeholder="es. 20:30")
-                    tdm_lane = st.text_input("Lane", key=f"tdm_lane_{i}", placeholder="es. ITK1 -> MXP6")
-                with col2:
-                    tdm_vrid = st.text_input("VRID", key=f"tdm_vrid_{i}", placeholder="es. 115463NH3")
-                    tdm_root_cause = st.text_area(
-                        "Root Cause (puoi scrivere in italiano)",
-                        key=f"tdm_cause_{i}",
-                        height=68,
-                        placeholder="Causa del miss..."
+                    shipments = st.number_input(
+                        "Numero shipment",
+                        min_value=1, value=1,
+                        key=f"{section_key}_ship_{i}"
                     )
-                tdm_entries.append({
-                    "cpt": tdm_cpt,
-                    "lane": tdm_lane,
-                    "vrid": tdm_vrid,
-                    "root_cause": tdm_root_cause
-                })
-        st.session_state.true_dock_miss_entries = tdm_entries
-    else:
-        st.session_state.true_dock_miss_entries = []
+                    units = st.number_input(
+                        "Numero units totali",
+                        min_value=1, value=1,
+                        key=f"{section_key}_units_{i}"
+                    )
+                with col2:
+                    cpt = st.selectbox(
+                        "CPT",
+                        options=cpt_options,
+                        key=f"{section_key}_cpt_{i}"
+                    )
+                    lane = st.text_input(
+                        "Lane",
+                        key=f"{section_key}_lane_{i}",
+                        placeholder="es. MXP5 -> MXP6"
+                    )
 
-    # ─── SEZIONE SPECIFICA PER TIPO ──────────────────────────────────────
-
-    # === DOCK ===
-    if eos_type == "DOCK":
-        st.markdown("<div class='section-title'>📊 DOCK ASSETS COUNT</div>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            epal_dock = st.number_input("EPAL", min_value=0, value=0, key="epal_dock")
-            epal_tso = st.number_input("EPAL (di cui TSO)", min_value=0, value=0, key="epal_tso")
-            epal_yard = st.number_input("EPAL YARD", min_value=0, value=0, key="epal_yard")
-        with col2:
-            light_pallets = st.number_input("Light Pallets", min_value=0, value=0, key="light_pallets")
-            jp_carts = st.number_input("JP Carts", min_value=0, value=0, key="jp_carts")
-
-    # === TSO ===
-    elif eos_type == "TSO":
-        st.markdown("<div class='section-title'>📊 CONTA FINE TURNO</div>", unsafe_allow_html=True)
-        epal_buffer_tso = st.number_input("EPAL - Buffer TSO", min_value=0, value=0, key="epal_buffer_tso")
-
-        st.markdown("<div class='section-title'>📦 BUFFER PER DESTINAZIONE</div>", unsafe_allow_html=True)
-        st.caption("Aggiungi le destinazioni e i carrelli buffer accumulati")
-
-        num_buffer = st.number_input("Numero destinazioni", min_value=1, max_value=20, value=1, key="num_buffer_tso")
-        buffer_rows_tso = []
-        for i in range(num_buffer):
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                dest = st.text_input(f"Destinazione {i+1}", key=f"buf_dest_tso_{i}", placeholder="es. MXP6")
-            with col2:
-                carts = st.number_input(f"Carrelli {i+1}", min_value=0, value=0, key=f"buf_carts_tso_{i}")
-            buffer_rows_tso.append({"destination": dest, "carts": carts})
-
-    # === TSO-ITK1 ===
-    elif eos_type == "TSO-ITK1":
-        # Failed ExSD
-        st.markdown("<div class='section-title'>⚠️ FAILED ExSD - LATE DEPARTURE</div>", unsafe_allow_html=True)
-        has_failed = st.checkbox("Ci sono Failed ExSD?", value=False, key="has_failed_exsd")
-
-        failed_entries = []
-        if has_failed:
-            num_failed = st.number_input("Quanti Failed ExSD?", min_value=1, max_value=10, value=1, key="num_failed")
-
-            for i in range(num_failed):
-                with st.expander(f"Failed ExSD #{i+1}", expanded=True):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        f_lane = st.text_input("Lane", key=f"fexsd_lane_{i}", placeholder="es. MXP5 -> MXP6")
-                        f_cause = st.text_area(
-                            "Cause (puoi scrivere in italiano)",
-                            key=f"fexsd_cause_{i}",
-                            height=68,
-                            placeholder="Descrivi la causa del ritardo..."
-                        )
-                    with col2:
-                        f_vrid = st.text_input("VRID", key=f"fexsd_vrid_{i}", placeholder="es. 11379Y772")
-                        f_carrier = st.text_input("Carrier", key=f"fexsd_carrier_{i}", placeholder="es. ACRIX")
-
-                    col3, col4 = st.columns(2)
-                    with col3:
-                        f_load_start = st.text_input("Loading started", key=f"fexsd_ls_{i}", placeholder="es. Aug 6, 2026 7:02:44 PM")
-                        f_planned_dep = st.text_input("Planned departure", key=f"fexsd_pd_{i}", placeholder="es. Aug 6, 2026 18:55:00 PM")
-                    with col4:
-                        f_load_finish = st.text_input("Loading finish", key=f"fexsd_lf_{i}", placeholder="es. Aug 6, 2026 7:39:42 PM")
-                        f_actual_dep = st.text_input("Actual departure", key=f"fexsd_ad_{i}", placeholder="es. Aug 6, 2026 8:03:50 PM")
-
-                    f_cx_impact = st.selectbox("CX Impact", ["No", "Yes"], key=f"fexsd_cx_{i}")
-
-                    failed_entries.append({
-                        "date": eos_date.strftime("%d/%m/%Y"),
-                        "lane": f_lane,
-                        "cause": f_cause,
-                        "vrid": f_vrid,
-                        "carrier": f_carrier,
-                        "cx_impact": f_cx_impact,
-                        "load_start": f_load_start,
-                        "load_finish": f_load_finish,
-                        "planned_dep": f_planned_dep,
-                        "actual_dep": f_actual_dep,
-                    })
-
-        st.session_state.failed_exsd_entries = failed_entries
-
-        # Buffer per destinazione
-        st.markdown("<div class='section-title'>📦 BUFFER PER DESTINAZIONE</div>", unsafe_allow_html=True)
-        st.caption("Carrelli dock ancora da pallettizzare per cella/destinazione")
-
-        num_buffer_itk = st.number_input("Numero destinazioni", min_value=1, max_value=20, value=2, key="num_buffer_itk")
-        buffer_rows_itk = []
-        for i in range(num_buffer_itk):
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                dest = st.text_input(
-                    f"Cella/Destinazione {i+1}",
-                    key=f"buf_dest_itk_{i}",
-                    placeholder="es. Cella B, Cella G, MXP6..."
+                rc = st.text_area(
+                    "Root Cause (puoi scrivere in italiano)",
+                    key=f"{section_key}_rc_{i}",
+                    height=68,
+                    placeholder="Descrivi la causa..."
                 )
-            with col2:
-                carts = st.number_input(f"Carrelli {i+1}", min_value=0, value=0, key=f"buf_carts_itk_{i}")
-            buffer_rows_itk.append({"destination": dest, "carts": carts})
 
-        # EPAL
-        st.markdown("<div class='section-title'>📊 EPAL COUNT</div>", unsafe_allow_html=True)
-        epal_itk = st.number_input("EPAL", min_value=0, value=0, key="epal_itk")
+                entries.append({
+                    "shipments": shipments,
+                    "units": units,
+                    "cpt": cpt,
+                    "lane": lane,
+                    "rc": rc,
+                })
 
-    # ─── Note aggiuntive ─────────────────────────────────────────────────
-    st.markdown("<div class='section-title'>📝 NOTE AGGIUNTIVE</div>", unsafe_allow_html=True)
-    additional_notes = st.text_area(
-        "Note extra (puoi scrivere in italiano, verranno tradotte)",
-        key="additional_notes",
-        height=100,
-        placeholder="Eventuali note aggiuntive..."
-    )
+    return ntr, entries
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — TRADUTTORE
+# SEZIONI
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_translate:
-    st.markdown("### 🌐 Traduttore Italiano → Inglese")
-    st.markdown("Scrivi un testo in italiano e verrà tradotto automaticamente in inglese corretto.")
 
-    input_text = st.text_area(
-        "Testo in italiano",
-        height=150,
-        key="translate_input",
-        placeholder="Scrivi qui il testo da tradurre..."
-    )
+# 1. MISSING
+missing_ntr, missing_entries = render_event_section("missing", "MISSING", "📦")
 
-    if st.button("🔄 Traduci", type="primary"):
-        if input_text.strip():
-            with st.spinner("Traduzione in corso..."):
-                translated = translate_to_english(input_text)
-            st.markdown("**Traduzione:**")
-            st.code(translated, language=None)
-            st.caption("Puoi copiare il testo tradotto e incollarlo nei campi del form.")
-        else:
-            st.warning("Inserisci un testo da tradurre.")
+# 2. TRUE DOCK MISS
+tdm_ntr, tdm_entries = render_event_section("tdm", "TRUE DOCK MISS", "🚛")
+
+# 3. LATE DEPARTURE
+ld_ntr, ld_entries = render_event_section("ld", "LATE DEPARTURE", "⚠️")
+
+# 4. DOCK ASSETS COUNT
+st.markdown("<div class='section-title'>📊 DOCK ASSETS COUNT</div>", unsafe_allow_html=True)
+col1, col2 = st.columns(2)
+with col1:
+    epal = st.number_input("EPAL", min_value=0, value=0, key="epal")
+    epal_tso = st.number_input("EPAL (di cui TSO)", min_value=0, value=0, key="epal_tso")
+    epal_yard = st.number_input("EPAL YARD", min_value=0, value=0, key="epal_yard")
+with col2:
+    light_pallets = st.number_input("Light Pallets", min_value=0, value=0, key="light_pallets")
+    jp_carts = st.number_input("JP Carts", min_value=0, value=0, key="jp_carts")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — ANTEPRIMA & INVIO
+# GENERAZIONE REPORT & MAILTO
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_preview:
-    st.markdown("### 👁️ Anteprima & Invio EOS")
+st.divider()
+st.markdown("### 👁️ Anteprima & Invio")
 
-    # Nome clerk
-    sender_name = st.text_input("Il tuo nome", key="sender_name", placeholder="es. Mario Rossi")
+def build_section_text(title: str, ntr: bool, entries: list, date_str: str) -> str:
+    """Costruisce il testo di una sezione."""
+    lines = [f"{title}:"]
+    if ntr:
+        lines.append("Nothing to report")
+    else:
+        for entry in entries:
+            lines.append(
+                f"CPT {entry['cpt']} {date_str} | "
+                f"Lane: {entry['lane']} | "
+                f"Shipments: {entry['shipments']} | "
+                f"Units: {entry['units']}"
+            )
+            rc_translated = translate_to_english(entry['rc'])
+            lines.append(f"Root Cause: {rc_translated}")
+            lines.append("")
+    return "\n".join(lines)
+
+
+def build_eos_dock():
+    """Costruisce il testo EOS DOCK completo."""
+    date_str = eos_date.strftime("%d/%m/%Y")
+    lines = []
+
+    lines.append(f"EOS DOCK  {date_str}")
+    lines.append("")
+    lines.append("Hi all,")
+    lines.append("Below the daily report:")
+    lines.append("")
+
+    # Missing
+    lines.append(build_section_text("MISSING", missing_ntr, missing_entries, date_str))
+    lines.append("")
+
+    # True Dock Miss
+    lines.append(build_section_text("TRUE DOCK MISS", tdm_ntr, tdm_entries, date_str))
+    lines.append("")
+
+    # Late Departure
+    lines.append(build_section_text("LATE DEPARTURE", ld_ntr, ld_entries, date_str))
+    lines.append("")
+
+    # Dock Assets Count
+    lines.append("DOCK ASSETS COUNT:")
+    lines.append(f"EPAL:              {epal} ( {epal_tso} TSO )")
+    lines.append(f"EPAL YARD:         {epal_yard}")
+    lines.append(f"Light Pallets:     {light_pallets}")
+    lines.append(f"JP Carts:          {jp_carts}")
+
+    return "\n".join(lines)
+
+
+if st.button("🔄 Genera Anteprima & Email", type="primary", use_container_width=True):
+    if not sender_name:
+        st.error("⚠️ Inserisci il tuo nome in alto.")
+    else:
+        with st.spinner("Generazione in corso (traduzione testi)..."):
+            preview = build_eos_dock()
+        st.session_state.eos_preview = preview
+
+if "eos_preview" in st.session_state and st.session_state.eos_preview:
+    st.markdown(f"<div class='preview-box'>{st.session_state.eos_preview}</div>",
+               unsafe_allow_html=True)
 
     st.divider()
 
-    def build_eos_text():
-        """Costruisce il testo EOS completo, traducendo i campi liberi."""
-        lines = []
-        date_str = eos_date.strftime("%d/%m/%Y")
+    # Costruisci mailto
+    date_str = eos_date.strftime("%d/%m/%Y")
+    subject = f"EOS DOCK - {date_str}"
+    body = st.session_state.eos_preview
+    if sender_name:
+        body += f"\n\nBest regards,\n{sender_name}"
 
-        lines.append(f"EOS {eos_type} - {date_str}")
-        lines.append("")
+    to_str = ";".join(DEFAULT_RECIPIENTS)
+    mailto_url = (
+        f"mailto:{to_str}"
+        f"?subject={urllib.parse.quote(subject)}"
+        f"&body={urllib.parse.quote(body)}"
+    )
 
-        # MISSING
-        lines.append("MISSING:")
-        if missing_ntr:
-            lines.append("Nothing to report")
-        else:
-            lines.append(translate_to_english(missing_text))
-        lines.append("")
-
-        # TRUE DOCK MISS
-        lines.append("TRUE DOCK MISS:")
-        if tdm_ntr:
-            lines.append("Nothing to report")
-        else:
-            for entry in st.session_state.true_dock_miss_entries:
-                lines.append(f"CPT {entry['cpt']} {date_str}")
-                lines.append(f"Lane: {entry['lane']}")
-                lines.append(f"VRID: {entry['vrid']}")
-                lines.append(f"Root Cause: {translate_to_english(entry['root_cause'])}")
-                lines.append("")
-        lines.append("")
-
-        # Sezione specifica
-        if eos_type == "DOCK":
-            lines.append("DOCK ASSETS COUNT:")
-            lines.append(f"EPAL:              {epal_dock} ( {epal_tso} TSO )")
-            lines.append(f"EPAL YARD:         {epal_yard}")
-            lines.append(f"Light Pallets:     {light_pallets}")
-            lines.append(f"JP Carts:          {jp_carts}")
-
-        elif eos_type == "TSO":
-            lines.append("Conta fine turno:")
-            lines.append(f"EPAL - Buffer TSO:  {epal_buffer_tso}")
-            lines.append("")
-            if buffer_rows_tso:
-                lines.append("Buffer per destinazione:")
-                for row in buffer_rows_tso:
-                    if row["destination"]:
-                        lines.append(f"  {row['destination']}: {row['carts']} carrelli")
-
-        elif eos_type == "TSO-ITK1":
-            # Failed ExSD
-            if st.session_state.failed_exsd_entries:
-                lines.append("Failed ExSD - Late Departure")
-                for entry in st.session_state.failed_exsd_entries:
-                    lines.append(f"{entry['date']} Lane {entry['lane']}")
-                    lines.append(f"Cause: {translate_to_english(entry['cause'])}")
-                    lines.append(f"VRID:  {entry['vrid']}")
-                    lines.append(f"CARRIER: {entry['carrier']}")
-                    lines.append(f"Loading started: {entry['load_start']}")
-                    lines.append(f"Loading finish: {entry['load_finish']}")
-                    lines.append(f"Planned departure:  {entry['planned_dep']}")
-                    lines.append(f"Actual departure: {entry['actual_dep']}")
-                    lines.append(f"CX Impact: {entry['cx_impact']}")
-                    lines.append("")
-            else:
-                lines.append("Failed ExSD - Late Departure")
-                lines.append("Nothing to report")
-                lines.append("")
-
-            # Buffer
-            if buffer_rows_itk:
-                has_data = any(r["destination"] for r in buffer_rows_itk)
-                if has_data:
-                    for row in buffer_rows_itk:
-                        if row["destination"]:
-                            lines.append(f"Numero carrelli dock {row['destination']} ancora da pallettizzare: {row['carts']}")
-                    lines.append("")
-
-            lines.append(f"EPAL:   {epal_itk}")
-
-        # Note aggiuntive
-        if additional_notes and additional_notes.strip():
-            lines.append("")
-            lines.append("Additional Notes:")
-            lines.append(translate_to_english(additional_notes))
-
-        return "\n".join(lines)
-
-    if st.button("🔄 Genera Anteprima", type="primary"):
-        with st.spinner("Generazione in corso (traduzione testi)..."):
-            preview_text = build_eos_text()
-        st.session_state.eos_preview = preview_text
-
-    if "eos_preview" in st.session_state and st.session_state.eos_preview:
-        st.markdown("**Anteprima email:**")
-        st.markdown(f"<div class='preview-box'>{st.session_state.eos_preview}</div>",
-                   unsafe_allow_html=True)
-
-        st.divider()
-
-        # ─── Bottone "Apri in Outlook" (mailto link) ─────────────────────
-        date_str = eos_date.strftime("%d/%m/%Y")
-        subject = f"EOS {eos_type} - {date_str}"
-        body = f"Hi all,\n\nBelow the daily report:\n\n{st.session_state.eos_preview}"
-        if sender_name:
-            body += f"\n\nBest regards,\n{sender_name}"
-
-        # Costruisci mailto
-        to_str = ";".join(DEFAULT_RECIPIENTS)
-        mailto_url = (
-            f"mailto:{to_str}"
-            f"?subject={urllib.parse.quote(subject)}"
-            f"&body={urllib.parse.quote(body)}"
-        )
-
-        st.markdown("**📧 Apri email in Outlook:**")
-        st.markdown(
-            f'<a href="{mailto_url}" class="mailto-btn">📧 Apri in Outlook</a>',
-            unsafe_allow_html=True
-        )
-        st.caption("Cliccando si apre Outlook con destinatari, oggetto e testo già compilati. Controlla e premi Invia.")
-
-        st.divider()
-
-        # ─── Alternativa: Copia testo ────────────────────────────────────
-        st.markdown("**📋 Oppure copia il testo manualmente:**")
-        st.code(body, language=None)
-        st.caption(f"Destinatari: {'; '.join(DEFAULT_RECIPIENTS)}")
-        st.caption(f"Oggetto: {subject}")
-
-    else:
-        st.info("👆 Compila il form nella prima tab, poi clicca 'Genera Anteprima' per vedere il report e inviarlo.")
+    st.markdown(
+        f'<a href="{mailto_url}" class="mailto-btn">📧 Apri in Outlook — Premi solo Invia</a>',
+        unsafe_allow_html=True
+    )
+    st.caption("Si apre Outlook con email già compilata. Basta cliccare Invia.")
