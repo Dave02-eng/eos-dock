@@ -98,7 +98,6 @@ with col_date:
     eos_date = st.date_input("📅 Data", value=date.today(), key="eos_date")
 
 with col_shift:
-    # Determina se domenica
     is_sunday = eos_date.weekday() == 6
     if is_sunday:
         turno = st.selectbox("⏰ Turno", ["DOMENICA"], key="turno")
@@ -113,48 +112,71 @@ with col_name:
 st.divider()
 
 
-# ─── Funzione sezione eventi (Missing / TDM / LD) ────────────────────────────
+# ─── Funzione sezione eventi ─────────────────────────────────────────────────
 
 def render_event_section(section_key: str, section_title: str, icon: str):
-    """Renderizza una sezione con NTR checkbox e form ripetibile."""
+    """
+    Renderizza una sezione.
+    Di default i campi sono APERTI. Spuntando NTR si chiude tutto.
+    Ogni evento ha: lista shipment (ID + units), CPT, Lane, Root Cause.
+    """
     st.markdown(f"<div class='section-title'>{icon} {section_title}</div>", unsafe_allow_html=True)
 
-    ntr = st.checkbox("Nothing to report", value=True, key=f"{section_key}_ntr")
+    # NTR checkbox — di default NON spuntato (campi visibili)
+    ntr = st.checkbox("Nothing to report", value=False, key=f"{section_key}_ntr")
 
     entries = []
+
     if not ntr:
         num = st.number_input(
-            f"Quanti eventi {section_title}?",
+            f"Quanti eventi?",
             min_value=1, max_value=10, value=1,
             key=f"{section_key}_num"
         )
 
         for i in range(num):
             with st.expander(f"{section_title} #{i+1}", expanded=True):
+                # CPT e Lane
                 col1, col2 = st.columns(2)
                 with col1:
-                    shipments = st.number_input(
-                        "Numero shipment",
-                        min_value=1, value=1,
-                        key=f"{section_key}_ship_{i}"
-                    )
-                    units = st.number_input(
-                        "Numero units totali",
-                        min_value=1, value=1,
-                        key=f"{section_key}_units_{i}"
-                    )
-                with col2:
                     cpt = st.selectbox(
                         "CPT",
                         options=cpt_options,
                         key=f"{section_key}_cpt_{i}"
                     )
+                with col2:
                     lane = st.text_input(
                         "Lane",
                         key=f"{section_key}_lane_{i}",
                         placeholder="es. MXP5 -> MXP6"
                     )
 
+                # Shipments
+                st.markdown("**Shipments:**")
+                num_ship = st.number_input(
+                    "Numero shipment",
+                    min_value=1, max_value=20, value=1,
+                    key=f"{section_key}_numship_{i}"
+                )
+
+                shipments = []
+                for s in range(num_ship):
+                    cs1, cs2 = st.columns([2, 1])
+                    with cs1:
+                        ship_id = st.text_input(
+                            f"Shipment ID #{s+1}",
+                            key=f"{section_key}_shipid_{i}_{s}",
+                            placeholder="es. VRID o tracking"
+                        )
+                    with cs2:
+                        ship_units = st.number_input(
+                            f"Units #{s+1}",
+                            min_value=0, value=1,
+                            key=f"{section_key}_units_{i}_{s}"
+                        )
+                    shipments.append({"id": ship_id, "units": ship_units})
+
+                # Root Cause
                 rc = st.text_area(
                     "Root Cause (puoi scrivere in italiano)",
                     key=f"{section_key}_rc_{i}",
@@ -162,11 +184,15 @@ def render_event_section(section_key: str, section_title: str, icon: str):
                     placeholder="Descrivi la causa..."
                 )
 
+                # Totale units
+                total_units = sum(sh["units"] for sh in shipments)
+
                 entries.append({
-                    "shipments": shipments,
-                    "units": units,
                     "cpt": cpt,
                     "lane": lane,
+                    "shipments": shipments,
+                    "total_units": total_units,
+                    "num_shipments": len(shipments),
                     "rc": rc,
                 })
 
@@ -204,6 +230,7 @@ with col2:
 st.divider()
 st.markdown("### 👁️ Anteprima & Invio")
 
+
 def build_section_text(title: str, ntr: bool, entries: list, date_str: str) -> str:
     """Costruisce il testo di una sezione."""
     lines = [f"{title}:"]
@@ -214,9 +241,14 @@ def build_section_text(title: str, ntr: bool, entries: list, date_str: str) -> s
             lines.append(
                 f"CPT {entry['cpt']} {date_str} | "
                 f"Lane: {entry['lane']} | "
-                f"Shipments: {entry['shipments']} | "
-                f"Units: {entry['units']}"
+                f"Shipments: {entry['num_shipments']} | "
+                f"Total Units: {entry['total_units']}"
             )
+            # Lista shipment
+            for sh in entry["shipments"]:
+                if sh["id"]:
+                    lines.append(f"  - {sh['id']}: {sh['units']} units")
+            # Root Cause tradotta
             rc_translated = translate_to_english(entry['rc'])
             lines.append(f"Root Cause: {rc_translated}")
             lines.append("")
