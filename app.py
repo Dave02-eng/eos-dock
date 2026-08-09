@@ -128,13 +128,12 @@ def render_event_section(section_key: str, section_title: str, icon: str):
     entries = []
 
     if not ntr:
-        num = st.number_input(
-            f"Quanti eventi?",
-            min_value=1, max_value=10, value=1,
-            key=f"{section_key}_num"
-        )
+        # Gestione numero eventi con bottone +
+        count_key = f"{section_key}_count"
+        if count_key not in st.session_state:
+            st.session_state[count_key] = 1
 
-        for i in range(num):
+        for i in range(st.session_state[count_key]):
             with st.expander(f"{section_title} #{i+1}", expanded=True):
                 # CPT e Lane
                 col1, col2 = st.columns(2)
@@ -195,6 +194,11 @@ def render_event_section(section_key: str, section_title: str, icon: str):
                     "num_shipments": len(shipments),
                     "rc": rc,
                 })
+
+        # Bottone per aggiungere evento
+        if st.button(f"➕ Aggiungi {section_title}", key=f"{section_key}_add"):
+            st.session_state[count_key] += 1
+            st.rerun()
 
     return ntr, entries
 
